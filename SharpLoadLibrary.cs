@@ -557,6 +557,9 @@ public class SharpLoadLibrary {
     [DllImport("kernel32.dll")]
     static extern bool FlushInstructionCache(IntPtr hProcess, IntPtr lpBaseAddress, UIntPtr dwSize);
 
+    [DllImport("kernel32.dll", EntryPoint = "RtlAddFunctionTable", CallingConvention = CallingConvention.Cdecl)]
+    public static extern bool RtlAddFunctionTable(IntPtr FunctionTable, UInt32 EntryCount, IntPtr BaseAddress);
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     public delegate UInt32 NTAVM(IntPtr ProcessHandle, ref IntPtr BaseAddress, IntPtr ZeroBits, ref IntPtr RegionSize, UInt32 AllocationType, UInt32 Protect);
 
@@ -670,6 +673,8 @@ public class SharpLoadLibrary {
         SetMemoryProtections(PEBase, PE, sysgate);
         Console.WriteLine("Executing TLS callbacks...");
         ExecuteTLSCallback(PEBase);
+        Console.WriteLine("Registering exception handler...");
+        RegisterExceptionHandler(PEBase);
         Console.WriteLine("Executing entry point...");
         ExecuteEntryPoint(PEBase, PE);
 
@@ -697,8 +702,7 @@ public class SharpLoadLibrary {
 
         //Perform Base Relocation
         long currentbase = (long)PEBase.ToInt64();
-        long delta;
-        delta = (long)(currentbase - (long)PE.OptionalHeader64.ImageBase);
+        long delta = (long)(currentbase - (long)PE.OptionalHeader64.ImageBase);
         //Modify Memory Based On Relocation Table
         IntPtr relocationTable = (IntPtr)((long)(PEBase.ToInt64() + (int)PE.OptionalHeader64.BaseRelocationTable.VirtualAddress));
         PEReader.IMAGE_BASE_RELOCATION relocationEntry = new PEReader.IMAGE_BASE_RELOCATION();
@@ -962,6 +966,26 @@ public class SharpLoadLibrary {
             IMAGE_TLS_CALLBACK_Delegate CurrentTLSCallback = (IMAGE_TLS_CALLBACK_Delegate)Marshal.GetDelegateForFunctionPointer(CurrentTLSCallbackAddr, typeof(IMAGE_TLS_CALLBACK_Delegate));
             CurrentTLSCallback(PEBase, 1, IntPtr.Zero);
         }
+    }
+
+    public static void RegisterExceptionHandler(IntPtr PEBase) {
+        IntPtr OptHeader = PEBase + Marshal.ReadInt32((IntPtr)(PEBase + 0x3C)) + 0x18;
+        Int16 Magic = Marshal.ReadInt16(OptHeader + 0);
+        IntPtr DataDirectoryAddr = IntPtr.Zero;        
+        if (Magic == 0x010b) {
+            DataDirectoryAddr = (IntPtr)(OptHeader.ToInt64() + (long)0x60); // PE32, 0x60 = 96 
+        }
+        else {
+            DataDirectoryAddr = (IntPtr)(OptHeader.ToInt64() + (long)0x70); // PE32+, 0x70 = 112
+        }
+
+        int ExceptionHandlerTableSize = Marshal.ReadInt32((IntPtr)(DataDirectoryAddr.ToInt64() + (long)28)); 
+        IntPtr ExceptionHandlerTableAddr = (IntPtr)(PEBase.ToInt64() + (long)Marshal.ReadInt32((IntPtr)DataDirectoryAddr + 24));
+        if (ExceptionHandlerTableSize < 1) {
+            return;
+        }
+
+        RtlAddFunctionTable(ExceptionHandlerTableAddr, (UInt32)((ExceptionHandlerTableSize / 12) - 1), PEBase);
     }
 
     public static void ExecuteEntryPoint(IntPtr PEBase, PEReader PE) {
